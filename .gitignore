@@ -215,5 +215,8 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-datasets/
+datasets/*
+
+!datasets/*.yaml
+!datasets/**/*.yaml
 runs/
