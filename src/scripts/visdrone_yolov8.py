@@ -1,3 +1,10 @@
+"""
+Training script for baseline YOLOv8 on VisDrone dataset.
+
+This script trains a standard YOLOv8n model with randomly initialized weights
+on the VisDrone dataset for comparison with the MoE version.
+"""
+
 import torch
 from ultralytics import YOLO
 from src.models.moe_yolo import init_weights_random
@@ -18,13 +25,8 @@ model.train(
     batch=16,
     workers=32,
     project="runs/train",
-    name="moe_yolo_voc"
+    name="moe_yolo_voc",
 )
 model.save("yolov8_random.pt")
-results = model.val(
-    data=data_path,
-    imgsz=640,
-    batch=16,
-    workers=8
-)
+results = model.val(data=data_path, imgsz=640, batch=16, workers=8)
 print(results)

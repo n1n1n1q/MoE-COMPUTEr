@@ -1,52 +1,123 @@
+"""
+Bottleneck layer implementations.
+
+This module provides standard bottleneck blocks with residual connections
+and Mixture of Experts (MoE) bottleneck blocks for efficient and dynamic
+neural network architectures.
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from src.nn.conv import Conv
 
+
 class Bottleneck(nn.Module):
-    def __init__(self, in_channels, out_channels, shortcut=True, groups=1, expansion=0.5):
+    """
+    Standard bottleneck block with residual connection.
+
+    A bottleneck block consists of two convolution layers with an optional shortcut
+    connection. The first convolution reduces channels, and the second restores them.
+    """
+
+    def __init__(
+        self, in_channels, out_channels, shortcut=True, groups=1, expansion=0.5
+    ):
+        """
+        Initialize the Bottleneck block.
+
+        Args:
+            in_channels (int): Number of input channels.
+            out_channels (int): Number of output channels.
+            shortcut (bool, optional): Whether to use residual shortcut connection. Defaults to True.
+            groups (int, optional): Number of groups for grouped convolution. Defaults to 1.
+            expansion (float, optional): Channel expansion factor for hidden layer. Defaults to 0.5.
+        """
         super(Bottleneck, self).__init__()
         hidden_channels = int(out_channels * expansion)
         self.conv1 = Conv(in_channels, hidden_channels, kernel_size=1, stride=1)
-        self.conv2 = Conv(hidden_channels, out_channels, kernel_size=3, stride=1, groups=groups)
+        self.conv2 = Conv(
+            hidden_channels, out_channels, kernel_size=3, stride=1, groups=groups
+        )
         self.use_shortcut = shortcut and in_channels == out_channels
 
     def forward(self, x):
+        """
+        Forward pass through the bottleneck block.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, in_channels, height, width).
+
+        Returns:
+            torch.Tensor: Output tensor with optional residual connection applied.
+        """
         y = self.conv2(self.conv1(x))
         return x + y if self.use_shortcut else y
-    
-class MoEBottleneck(nn.Module):    
-    def __init__(self, c1: int, c2: int, num_experts: int = 4, k: int = 2, shortcut: bool = True, g: int = 1, e: float = 0.5):
+
+
+class MoEBottleneck(nn.Module):
+    """
+    Mixture of Experts (MoE) Bottleneck block.
+
+    This module implements a sparse MoE layer where multiple expert bottleneck blocks
+    are available, and a gating network dynamically selects the top-k experts for each
+    input. The outputs from selected experts are weighted and combined.
+    """
+
+    def __init__(
+        self,
+        c1: int,
+        c2: int,
+        num_experts: int = 4,
+        k: int = 2,
+        shortcut: bool = True,
+        g: int = 1,
+        e: float = 0.5,
+    ):
         """
         Initialize MoE Bottleneck.
-        
+
         Args:
-            c1 (int): Input channels.
-            c2 (int): Output channels.
-            num_experts (int): Number of expert bottlenecks.
-            k (int): Top-k experts to use per input.
-            shortcut (bool): Whether to use shortcut connections.
-            g (int): Groups for convolutions.
-            e (float): Expansion ratio.
+            c1 (int): Number of input channels.
+            c2 (int): Number of output channels.
+            num_experts (int, optional): Number of expert bottleneck modules. Defaults to 4.
+            k (int, optional): Number of top experts to select per input. Defaults to 2.
+            shortcut (bool, optional): Whether to use residual shortcut connection. Defaults to True.
+            g (int, optional): Number of groups for grouped convolution. Defaults to 1.
+            e (float, optional): Channel expansion factor for expert bottlenecks. Defaults to 0.5.
         """
         super().__init__()
         self.num_experts = num_experts
         self.k = min(k, num_experts)
         self.shortcut = shortcut and c1 == c2
 
-        self.experts = nn.ModuleList([
-            Bottleneck(c1, c2, shortcut=False, groups=g, expansion=e) 
-            for _ in range(num_experts)
-        ])
-        
+        self.experts = nn.ModuleList(
+            [
+                Bottleneck(c1, c2, shortcut=False, groups=g, expansion=e)
+                for _ in range(num_experts)
+            ]
+        )
+
         self.gate = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
             nn.Linear(c1, num_experts),
         )
-        
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through the MoE bottleneck.
+
+        The gating network selects the top-k experts for each input, and their
+        outputs are weighted by the gate probabilities and combined.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, c1, height, width).
+
+        Returns:
+            torch.Tensor: Output tensor with expert outputs combined and optional residual connection.
+        """
         batch_size = x.shape[0]
         gate_logits = self.gate(x)
 
@@ -58,10 +129,10 @@ class MoEBottleneck(nn.Module):
             for j in range(self.k):
                 expert_idx = top_k_indices[i, j]
                 expert_weight = top_k_gates[i, j]
-                expert_output = self.experts[expert_idx](x[i:i+1])
-                output[i:i+1] += expert_weight * expert_output
+                expert_output = self.experts[expert_idx](x[i : i + 1])
+                output[i : i + 1] += expert_weight * expert_output
 
         if self.shortcut:
             output = output + x
-            
+
         return output
