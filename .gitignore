@@ -220,3 +220,6 @@ datasets/*
 !datasets/*.yaml
 !datasets/**/*.yaml
 runs/
+
+weights/
+!weights/readme.md
