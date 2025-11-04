@@ -56,6 +56,48 @@ class Bottleneck(nn.Module):
         return x + y if self.use_shortcut else y
 
 
+class Gate(nn.Module):
+    """
+    Gating network for Mixture of Experts (MoE).
+    This module computes the gating scores for selecting top-k experts
+    based on the input features.
+    """
+
+    def __init__(self, dim, num_experts, top_k, bias=True):
+        """
+        Initialize the Gate.
+        Args:
+            dim (int): Dimension of the input features.
+            num_experts (int): Number of experts available.
+            top_k (int): Number of top experts to select.
+            bias (bool, optional): Whether to include a bias term. Defaults to True.
+        """
+        super(Gate, self).__init__()
+        self.dim = dim
+        self.num_experts = num_experts
+        self.top_k = top_k
+        self.weight = nn.Parameter(torch.Tensor(dim, num_experts))
+        self.bias = nn.Parameter(torch.Tensor(num_experts)) if bias else None
+
+    def forward(self, x):
+        """
+        Forward pass through the gating network.
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, dim).
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: Weights and indices of selected experts.
+        """
+        scores = F.linear(x, self.weight)
+        scores = scores.softmax(dim=-1)
+        original_scores = scores
+        if self.bias:
+            scores = scores + self.bias
+        indices = scores.topk(self.top_k, dim=-1)[1]
+        weights = original_scores.gather(-1, indices)
+        weights /= weights.sum(dim=-1, keepdim=True)
+        return weights, indices
+
+
 class MoEBottleneck(nn.Module):
     """
     Mixture of Experts (MoE) Bottleneck block.
@@ -88,6 +130,7 @@ class MoEBottleneck(nn.Module):
             e (float, optional): Channel expansion factor for expert bottlenecks. Defaults to 0.5.
         """
         super().__init__()
+        self.dim = c1
         self.num_experts = num_experts
         self.k = min(k, num_experts)
         self.shortcut = shortcut and c1 == c2
@@ -99,11 +142,7 @@ class MoEBottleneck(nn.Module):
             ]
         )
 
-        self.gate = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(c1, num_experts),
-        )
+        self.gate = Gate(dim=c1, num_experts=num_experts, top_k=self.k)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -118,21 +157,15 @@ class MoEBottleneck(nn.Module):
         Returns:
             torch.Tensor: Output tensor with expert outputs combined and optional residual connection.
         """
-        batch_size = x.shape[0]
-        gate_logits = self.gate(x)
-
-        top_k_logits, top_k_indices = torch.topk(gate_logits, self.k, dim=1)
-        top_k_gates = F.softmax(top_k_logits, dim=1)
-        output = torch.zeros_like(x)
-
-        for i in range(batch_size):
-            for j in range(self.k):
-                expert_idx = top_k_indices[i, j]
-                expert_weight = top_k_gates[i, j]
-                expert_output = self.experts[expert_idx](x[i : i + 1])
-                output[i : i + 1] += expert_weight * expert_output
-
-        if self.shortcut:
-            output = output + x
-
-        return output
+        shape = x.size()
+        x = x.view(-1, self.dim)
+        weights, indices = self.gate(x)
+        y = torch.zeros_like(x, dtype=torch.float32)
+        counts = torch.bincount(indices.flatten(), minlength=self.num_experts).tolist()
+        for i in range(self.num_experts):
+            if counts[i] == 0:
+                continue
+            expert = self.experts[i]
+            idx, top = torch.where(indices == i)
+            y[idx] += expert(x[idx]) * weights[idx, top, None]
+        return y.view(shape) + x.view(shape) if self.shortcut else y.view(shape)
