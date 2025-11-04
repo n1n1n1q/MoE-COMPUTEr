@@ -8,7 +8,6 @@ for enhanced feature extraction and model capacity.
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from src.nn.conv import Conv
 from src.nn.bottleneck import MoEBottleneck
 

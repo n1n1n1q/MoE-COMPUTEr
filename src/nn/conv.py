@@ -6,7 +6,6 @@ normalization, and activation into a single layer, along with utility
 functions for automatic padding calculation.
 """
 
-import torch
 import torch.nn as nn
 
 
