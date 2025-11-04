@@ -6,13 +6,17 @@ The model uses random weight initialization and trains for 100 epochs.
 """
 
 from src.models.moe_yolo import yolov8_moe
+from src.utils.random import set_seed
 
-model = yolov8_moe(random_state=148)
+RANDOM_STATE = 148
+
+set_seed(RANDOM_STATE, False)
+model = yolov8_moe()
 
 data_path = "datasets/VisDrone.yaml"
 model.train(
     data=data_path,
-    epochs=100,
+    epochs=20,
     imgsz=640,
     batch=16,
     workers=16,

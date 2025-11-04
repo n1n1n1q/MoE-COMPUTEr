@@ -38,7 +38,7 @@ def init_weights_random(m):
             nn.init.zeros_(m.bias)
 
 
-def yolov8_moe(n_experts_l1=4, k_l1=2, n_experts_l2=4, k_l2=2, random_state=None):
+def yolov8_moe(n_experts_l1=4, k_l1=2, n_experts_l2=4, k_l2=2):
     """
     Create a YOLOv8 model with Mixture of Experts (MoE) layers.
 
@@ -80,12 +80,6 @@ def yolov8_moe(n_experts_l1=4, k_l1=2, n_experts_l2=4, k_l2=2, random_state=None
     new_c2f_neck.f = old_c2f_neck.f
     new_c2f_neck.type = old_c2f_neck.type
     model.model.model[12] = new_c2f_neck
-
-    if random_state is not None:
-        torch.manual_seed(random_state)
-        torch.cuda.manual_seed(random_state)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
 
     model.model.apply(init_weights_random)
 
