@@ -87,13 +87,10 @@ class Gate(nn.Module):
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: Weights and indices of selected experts.
         """
-        scores = F.linear(x, self.weight)
+        scores = F.linear(x, self.weight, self.bias)
         scores = scores.softmax(dim=-1)
-        original_scores = scores
-        if self.bias:
-            scores = scores + self.bias
         indices = scores.topk(self.top_k, dim=-1)[1]
-        weights = original_scores.gather(-1, indices)
+        weights = scores.gather(-1, indices)
         weights /= weights.sum(dim=-1, keepdim=True)
         return weights, indices
 
@@ -157,9 +154,8 @@ class MoEBottleneck(nn.Module):
         Returns:
             torch.Tensor: Output tensor with expert outputs combined and optional residual connection.
         """
-        shape = x.size()
-        x = x.view(-1, self.dim)
-        weights, indices = self.gate(x)
+        x_flattened = x.view(-1, self.dim)
+        weights, indices = self.gate(x_flattened)
         y = torch.zeros_like(x, dtype=torch.float32)
         counts = torch.bincount(indices.flatten(), minlength=self.num_experts).tolist()
         for i in range(self.num_experts):
@@ -168,4 +164,4 @@ class MoEBottleneck(nn.Module):
             expert = self.experts[i]
             idx, top = torch.where(indices == i)
             y[idx] += expert(x[idx]) * weights[idx, top, None]
-        return y.view(shape) + x.view(shape) if self.shortcut else y.view(shape)
+        return y + x if self.shortcut else y
