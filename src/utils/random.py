@@ -7,7 +7,7 @@ def set_seed(seed: int, deterministic: bool = False):
     Set the random seed for reproducibility across random, numpy, and torch.
     Args:
         seed (int): The seed value to set.
-        deterministic (bool, optional): Whether to set torch to deterministic mode. Defaults to True.
+        deterministic (bool, optional): Whether to set torch to deterministic mode. Defaults to False.
     """
     random.seed(seed)
     np.random.seed(seed)
