@@ -51,7 +51,6 @@ def yolov8_moe(n_experts_l1=4, k_l1=2, n_experts_l2=4, k_l2=2):
         k_l1 (int, optional): Number of active experts per input for first MoE layer. Defaults to 2.
         n_experts_l2 (int, optional): Number of experts for second MoE layer (layer 12). Defaults to 4.
         k_l2 (int, optional): Number of active experts per input for second MoE layer. Defaults to 2.
-        random_state (int, optional): Random seed for reproducible weight initialization. Defaults to None.
 
     Returns:
         YOLO: YOLOv8 model with MoE layers and randomly initialized weights.
