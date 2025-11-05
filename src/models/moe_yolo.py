@@ -2,7 +2,6 @@
 Create a YOLOv8 with MoE blocks and random-initialized weights (overrides pretrained file).
 """
 
-import torch
 import torch.nn as nn
 from src.nn.moe_c2f import C2fSparseMoE
 from ultralytics import YOLO

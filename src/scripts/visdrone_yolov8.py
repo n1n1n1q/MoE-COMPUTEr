@@ -5,7 +5,6 @@ This script trains a standard YOLOv8n model with randomly initialized weights
 on the VisDrone dataset for comparison with the MoE version.
 """
 
-import torch
 from ultralytics import YOLO
 from src.models.moe_yolo import init_weights_random
 from src.utils.random import set_seed
