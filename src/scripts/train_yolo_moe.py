@@ -18,10 +18,11 @@ model.train(
     data=data_path,
     epochs=20,
     imgsz=640,
-    batch=16,
-    workers=16,
+    batch=4,
+    workers=2,
     project="runs/train",
     name="moe_yolo_voc",
+    verbose=True
 )
 model.save("yolov8_moe_voc_rand.pt")
 results = model.val(data=data_path, imgsz=640, batch=16, workers=8)

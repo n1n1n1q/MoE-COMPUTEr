@@ -43,7 +43,6 @@ docker run -it --rm \
     --memory ${MEMORY} \
     --memory-swap ${MEMORY_SWAP} \
     ${IMAGE_NAME} \
-    bash -c "
-        echo '${welcome}'
+    bash -c """
         /bin/bash
-    "
+    """

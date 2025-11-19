@@ -5,11 +5,11 @@ This module provides standard bottleneck blocks with residual connections
 and Mixture of Experts (MoE) bottleneck blocks for efficient and dynamic
 neural network architectures.
 """
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ultralytics.utils import LOGGER
 from src.nn.conv import Conv
 
 
@@ -36,7 +36,7 @@ class Bottleneck(nn.Module):
         """
         super(Bottleneck, self).__init__()
         hidden_channels = int(out_channels * expansion)
-        self.conv1 = Conv(in_channels, hidden_channels, kernel_size=1, stride=1)
+        self.conv1 = Conv(in_channels, hidden_channels, kernel_size=3, stride=1)
         self.conv2 = Conv(
             hidden_channels, out_channels, kernel_size=3, stride=1, groups=groups
         )
@@ -76,8 +76,8 @@ class Gate(nn.Module):
         self.dim = dim
         self.num_experts = num_experts
         self.top_k = top_k
-        self.weight = nn.Parameter(torch.Tensor(dim, num_experts))
-        self.bias = nn.Parameter(torch.Tensor(num_experts)) if bias else None
+        self.weight = nn.Parameter(torch.randn(num_experts, dim))
+        self.bias = nn.Parameter(torch.rand(num_experts)) if bias else None
 
     def forward(self, x):
         """
@@ -139,7 +139,9 @@ class MoEBottleneck(nn.Module):
             ]
         )
 
-        self.gate = Gate(dim=c1, num_experts=num_experts, top_k=self.k)
+        self.gate = Gate(dim=c1*40*40, num_experts=num_experts, top_k=self.k)
+
+        self._batches_per_expert = [0] * self.num_experts
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -154,14 +156,23 @@ class MoEBottleneck(nn.Module):
         Returns:
             torch.Tensor: Output tensor with expert outputs combined and optional residual connection.
         """
-        x_flattened = x.view(-1, self.dim)
+
+        x_flattened = x.reshape(x.shape[0], -1)
         weights, indices = self.gate(x_flattened)
-        y = torch.zeros_like(x, dtype=torch.float32)
+        y = torch.zeros_like(x, dtype=torch.float32, device='cuda')
         counts = torch.bincount(indices.flatten(), minlength=self.num_experts).tolist()
         for i in range(self.num_experts):
             if counts[i] == 0:
                 continue
             expert = self.experts[i]
-            idx, top = torch.where(indices == i)
-            y[idx] += expert(x[idx]) * weights[idx, top, None]
+
+            d1, d2 = torch.where(indices == i)
+
+            y[d1] += expert(x[d1]) * weights[d1, d2, None, None, None]
+
+        self._batches_per_expert = counts
+
         return y + x if self.shortcut else y
+
+    def get_batcher_per_expert(self):
+        return self._batches_per_expert

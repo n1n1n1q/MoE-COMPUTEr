@@ -31,6 +31,7 @@ class C2fSparseMoE(nn.Module):
         e: float = 0.5,
         num_experts: int = 4,
         k: int = 2,
+        name="test"
     ):
         """
         Initialize a Sparse MoE version of the C2f layer.

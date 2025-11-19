@@ -223,3 +223,6 @@ runs/
 
 weights/
 !weights/readme.md
+
+.vscode
+*.pt
