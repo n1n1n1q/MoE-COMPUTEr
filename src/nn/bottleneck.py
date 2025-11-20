@@ -63,20 +63,18 @@ class Gate(nn.Module):
     based on the input features.
     """
 
-    def __init__(self, dim, num_experts, top_k, bias=True):
+    def __init__(self, num_experts:int, top_k:int, bias=True):
         """
         Initialize the Gate.
         Args:
-            dim (int): Dimension of the input features.
             num_experts (int): Number of experts available.
             top_k (int): Number of top experts to select.
             bias (bool, optional): Whether to include a bias term. Defaults to True.
         """
         super(Gate, self).__init__()
-        self.dim = dim
         self.num_experts = num_experts
         self.top_k = top_k
-        self.weight = nn.Parameter(torch.randn(num_experts, dim))
+        self.weight = None
         self.bias = nn.Parameter(torch.rand(num_experts)) if bias else None
 
     def forward(self, x):
@@ -87,8 +85,119 @@ class Gate(nn.Module):
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: Weights and indices of selected experts.
         """
+        x = x.reshape(x.shape[0], -1)
+
+        if self.weight is None:
+            self.weight = nn.Parameter(torch.randn(self.num_experts, x.shape[1], device=x.device))
+            
+            
+
         scores = F.linear(x, self.weight, self.bias)
         scores = scores.softmax(dim=-1)
+        indices = scores.topk(self.top_k, dim=-1)[1]
+        weights = scores.gather(-1, indices)
+        weights /= weights.sum(dim=-1, keepdim=True)
+        return weights, indices
+    
+class HasherGate(nn.Module):
+    """
+    Gating network for Mixture of Experts (MoE).
+    This module computes the gating scores for selecting top-k experts
+    based on the input features by hashing.
+    """
+    def __init__(self, num_experts:int, top_k:int):
+        """
+        Initialize the Gate.
+        Args:
+            num_experts (int): Number of experts available.
+            top_k (int): Number of top experts to select.
+        """
+        super(HasherGate, self).__init__()
+        self.num_experts = num_experts
+        self.top_k = top_k
+
+
+    def forward(self, x):
+        """
+        Forward pass through the gating network.
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, dim).
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: Weights and indices of selected experts.
+        """
+        B,C,H,W = x.shape   
+
+        pooled = F.adaptive_avg_pool2d(x, (1,1)).view(B,C)
+        
+        int_features = (pooled * 1e4).to(torch.int32) 
+        
+        hash_vals = int_features[:, 0]
+        for i in range(1, C):
+            hash_vals ^= int_features[:, i]
+
+        expert_indices = hash_vals % self.num_experts  
+
+        if self.top_k > 1:
+            all_indices = []
+            for k in range(self.top_k):
+                hashed = expert_indices + k * 2654435761  
+                hashed = hashed % self.num_experts
+                all_indices.append(hashed)
+            expert_indices = torch.stack(all_indices, dim=1) 
+        else:
+            expert_indices = expert_indices.unsqueeze(1)    
+
+        weights = torch.ones_like(expert_indices, dtype=torch.float32)
+        weights = weights / self.top_k
+
+        return weights, expert_indices
+    
+class NoisyGate(nn.Module):
+    """
+    Gating network for Mixture of Experts (MoE).
+    This module computes the gating scores for selecting top-k experts
+    based on the input features that adds noise to each gater's rank.
+    """
+
+    def __init__(self, num_experts:int, top_k:int, bias=True):
+        """
+        Initialize the Gate.
+        Args:
+            num_experts (int): Number of experts available.
+            top_k (int): Number of top experts to select.
+            bias (bool, optional): Whether to include a bias term. Defaults to True.
+        """
+        super(NoisyGate, self).__init__()
+        self.num_experts = num_experts
+        self.top_k = top_k
+        self.weight = None
+        self.noise_weight = None
+        self.bias = nn.Parameter(torch.rand(num_experts)) if bias else None
+
+    def forward(self, x):
+        """
+        Forward pass through the gating network.
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, dim).
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: Weights and indices of selected experts.
+        """
+        x = F.adaptive_avg_pool2d(x, (1, 1)).view(x.shape[0], -1)
+
+        if self.weight is None:
+            self.weight = nn.Parameter(torch.randn(self.num_experts, x.shape[1], device=x.device))
+            
+        if self.noise_weight is None:
+            self.noise_weight = nn.Parameter(
+                torch.randn(self.num_experts, x.shape[1], device=x.device) * 0.01
+        )
+
+        logits = F.linear(x, self.weight, self.bias)
+        noise_logits = F.linear(x, self.noise_weight)
+        noise_scale = F.softplus(noise_logits)
+        noise = torch.randn_like(logits) * noise_scale
+
+        scores = (logits + noise).softmax(dim=-1)
         indices = scores.topk(self.top_k, dim=-1)[1]
         weights = scores.gather(-1, indices)
         weights /= weights.sum(dim=-1, keepdim=True)
@@ -139,7 +248,8 @@ class MoEBottleneck(nn.Module):
             ]
         )
 
-        self.gate = Gate(dim=c1*40*40, num_experts=num_experts, top_k=self.k)
+            
+        self.gate = NoisyGate(num_experts=num_experts, top_k=self.k) 
 
         self._batches_per_expert = [0] * self.num_experts
 
@@ -157,9 +267,8 @@ class MoEBottleneck(nn.Module):
             torch.Tensor: Output tensor with expert outputs combined and optional residual connection.
         """
 
-        x_flattened = x.reshape(x.shape[0], -1)
-        weights, indices = self.gate(x_flattened)
-        y = torch.zeros_like(x, dtype=torch.float32, device='cuda')
+        weights, indices = self.gate(x)
+        y = torch.zeros_like(x, dtype=torch.float32, device=x.device)
         counts = torch.bincount(indices.flatten(), minlength=self.num_experts).tolist()
         for i in range(self.num_experts):
             if counts[i] == 0:

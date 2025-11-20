@@ -22,7 +22,9 @@ model.train(
     workers=2,
     project="runs/train",
     name="moe_yolo_voc",
-    verbose=True
+    verbose=True,
+    plots=False
+
 )
 model.save("yolov8_moe_voc_rand.pt")
 results = model.val(data=data_path, imgsz=640, batch=16, workers=8)
