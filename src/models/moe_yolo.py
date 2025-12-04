@@ -4,10 +4,15 @@ Create a YOLOv8 with MoE blocks and random-initialized weights (overrides pretra
 
 from typing import Any
 
+import torch
 import torch.nn as nn
+from torch.utils.tensorboard import SummaryWriter
 from ultralytics.models import yolo
 from src.utils.logger import MoELogger
 from src.nn.moe_c2f import C2fSparseMoE
+
+from torch.profiler import profile, ProfilerActivity
+
 from ultralytics.models.yolo.detect import DetectionTrainer
 from ultralytics.nn.tasks import DetectionModel
 from ultralytics import YOLO
@@ -41,6 +46,23 @@ def init_weights_random(m):
             nn.init.ones_(m.weight)
         if getattr(m, "bias", None) is not None:
             nn.init.zeros_(m.bias)
+
+
+def on_train_epoch_start(trainer):
+    model = trainer.model
+    imgsz = trainer.args.imgsz
+    device = next(model.parameters()).device
+    x = torch.randn(1, 3, imgsz, imgsz).to(device)
+
+    with profile(activities=[ProfilerActivity.CPU], with_flops=True) as p:
+        model(x)
+
+    ka = p.key_averages()
+    
+    total_flops = sum([op.flops for op in ka])
+
+    writer = SummaryWriter(trainer.save_dir)
+    writer.add_scalar("GFLOPS", total_flops / 1e9)
 
 
 class MoEDetectionModel(DetectionModel):
@@ -120,6 +142,8 @@ class MoEDetectionTrainer(DetectionTrainer):
              "C2F Bottlenech [0]":  model.new_c2f.m[0],
              "Neck C2F Bottlenech [0]":  model.new_c2f_neck.m[0],
         }))
+
+        self.add_callback('on_train_epoch_start', on_train_epoch_start)
 
         return model
 

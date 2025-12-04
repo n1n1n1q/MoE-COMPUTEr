@@ -14,8 +14,12 @@ class MoELogger():
         writer = SummaryWriter(trainer.save_dir)
 
         for name, module in self.modules_to_monitor.items():
-            writer.add_scalars(f"{name} / Batches per expers",
-                                { str(i): batches for i, batches in enumerate(module.get_batcher_per_expert()) },
+            samples_per_expert = module.get_batcher_per_expert()
+
+            samples_per_expert = 100 * samples_per_expert / torch.sum(samples_per_expert)
+
+            writer.add_scalars(f"{name} / Sample % per expert",
+                                { str(i): batches for i, batches in enumerate(samples_per_expert) },
                                 global_step=self.step)
 
             writer.add_scalar(
