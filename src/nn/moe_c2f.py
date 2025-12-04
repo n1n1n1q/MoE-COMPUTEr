@@ -8,8 +8,12 @@ for enhanced feature extraction and model capacity.
 
 import torch
 import torch.nn as nn
-from src.nn.conv import Conv
+
+# from src.nn.conv import Conv
 from src.nn.bottleneck import MoEBottleneck
+
+from ultralytics.nn.modules.block import Bottleneck
+from ultralytics.nn.modules.conv import Conv
 
 
 class C2fSparseMoE(nn.Module):
@@ -30,8 +34,8 @@ class C2fSparseMoE(nn.Module):
         g: int = 1,
         e: float = 0.5,
         num_experts: int = 4,
-        k: int = 2,
-        name="test"
+        top_k: int = 3,
+        name="test",
     ):
         """
         Initialize a Sparse MoE version of the C2f layer.
@@ -56,7 +60,8 @@ class C2fSparseMoE(nn.Module):
                 self.c,
                 self.c,
                 num_experts=num_experts,
-                k=k,
+                top_k=top_k,
+                k=((3, 3), (3, 3)),
                 shortcut=shortcut,
                 g=g,
                 e=1.0,
@@ -79,5 +84,13 @@ class C2fSparseMoE(nn.Module):
             torch.Tensor: Output tensor of shape (batch_size, c2, height, width).
         """
         y = list(self.cv1(x).chunk(2, 1))
+        y.extend(m(y[-1]) for m in self.m)
+        res = self.cv2(torch.cat(y, 1))
+        return res
+
+    def forward_split(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass using split() instead of chunk()."""
+        y = self.cv1(x).split((self.c, self.c), 1)
+        y = [y[0], y[1]]
         y.extend(m(y[-1]) for m in self.m)
         return self.cv2(torch.cat(y, 1))

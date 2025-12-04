@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-set -e
 
 IMAGE_NAME=moe-computerv:latest
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
@@ -25,7 +24,7 @@ if $RESET_CONTAINER; then
     docker rm -f ${CONTAINER_NAME} >/dev/null 2>&1 || true
 fi
 
-xhost +local:docker
+# xhost +local:docker
 
 docker run -it --rm \
     --gpus all \
