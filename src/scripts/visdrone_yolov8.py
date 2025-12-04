@@ -23,7 +23,7 @@ model.train(
     batch=16,
     workers=32,
     project="runs/train",
-    name="moe_yolo_voc",
+    name="yolo_voc",
 )
 model.save("yolov8_random.pt")
 results = model.val(data=data_path, imgsz=640, batch=16, workers=8)
