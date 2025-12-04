@@ -15,51 +15,6 @@ from ultralytics.nn.modules.block import Bottleneck
 from src.nn.conv import Conv
 
 
-# class Bottleneck(nn.Module):
-#     """
-#     Standard bottleneck block with residual connection.
-
-#     A bottleneck block consists of two convolution layers with an optional shortcut
-#     connection. The first convolution reduces channels, and the second restores them.
-#     """
-
-#     def __init__(
-#         self, in_channels, out_channels, shortcut=True, groups=1, expansion=0.5
-#     ):
-#         """
-#         Initialize the Bottleneck block.
-
-#         Args:
-#             in_channels (int): Number of input channels.
-#             out_channels (int): Number of output channels.
-#             shortcut (bool, optional): Whether to use residual shortcut connection. Defaults to True.
-#             groups (int, optional): Number of groups for grouped convolution. Defaults to 1.
-#             expansion (float, optional): Channel expansion factor for hidden layer. Defaults to 0.5.
-#         """
-#         super(Bottleneck, self).__init__()
-#         hidden_channels = int(out_channels * expansion)
-#         self.conv1 = Conv(in_channels, hidden_channels, kernel_size=3, stride=1)
-#         self.conv1.act = nn.SiLU(inplace=True)
-#         self.conv2 = Conv(
-#             hidden_channels, out_channels, kernel_size=3, stride=1, groups=groups
-#         )
-#         self.conv2.act = nn.SiLU(inplace=True)
-#         self.use_shortcut = shortcut and in_channels == out_channels
-
-#     def forward(self, x):
-#         """
-#         Forward pass through the bottleneck block.
-
-#         Args:
-#             x (torch.Tensor): Input tensor of shape (batch_size, in_channels, height, width).
-
-#         Returns:
-#             torch.Tensor: Output tensor with optional residual connection applied.
-#         """
-#         y = self.conv2(self.conv1(x))
-#         return x + y if self.use_shortcut else y
-
-
 class Gate(nn.Module):
     """
     Gating network for Mixture of Experts (MoE).

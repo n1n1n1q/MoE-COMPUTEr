@@ -43,11 +43,6 @@ def init_weights_random(m):
             nn.init.zeros_(m.bias)
 
 
-def on_train_start(trainer):
-    # print(trainer.model)
-    pass
-
-
 class MoEDetectionModel(DetectionModel):
     def __init__(
         self,
@@ -104,8 +99,10 @@ class MoEDetectionTrainer(DetectionTrainer):
             verbose=verbose,
             n_experts_l1=6,
         )
-        # if weights:
-        #     model.load(weights)
+
+        if weights:
+            model.load(weights)
+
         return model
 
 
