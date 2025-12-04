@@ -69,6 +69,9 @@ class C2fSparseMoE(nn.Module):
             for _ in range(n)
         )
 
+        self.name = name
+
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass through C2f MoE layer.

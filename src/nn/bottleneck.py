@@ -219,7 +219,7 @@ class MoEBottleneck(nn.Module):
             num_experts=num_experts, top_k=self.top_k, input_dim=self.dim
         )
 
-        self._batches_per_expert = [0] * self.num_experts
+        self._batches_per_expert = torch.tensor([0] * self.num_experts)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -237,6 +237,13 @@ class MoEBottleneck(nn.Module):
 
         gate_weights, gate_indices = self.gate(x)
 
+        values, counts = torch.unique(gate_indices, return_counts=True)
+
+        values = values.cpu()
+        counts = counts.cpu()
+
+        self._batches_per_expert[values] += counts
+
         output = torch.zeros_like(x)
         for expert_idx in range(self.num_experts):
             mask = (gate_indices == expert_idx).any(dim=-1)
@@ -250,7 +257,7 @@ class MoEBottleneck(nn.Module):
                 weights_subset = gate_weights[mask]
 
                 pos_mask = indices_subset == expert_idx  # (Subset_Size, top_k) boolean
-
+                
                 active_weights = (weights_subset * pos_mask.float()).sum(dim=-1)
 
                 active_weights = active_weights.view(-1, 1, 1, 1)

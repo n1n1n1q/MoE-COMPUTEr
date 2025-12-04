@@ -56,27 +56,40 @@ class MoEDetectionModel(DetectionModel):
         k_l2=2,
     ):
         super().__init__(cfg, ch, nc, verbose)
-        print(self.model[6])
 
         old_c2f = self.model[6]
         in_channels = old_c2f.cv1.conv.in_channels
         out_channels = old_c2f.cv2.conv.out_channels
-        new_c2f = C2fSparseMoE(
+        self.new_c2f = C2fSparseMoE(
             in_channels,
             out_channels,
             num_experts=n_experts_l1,
             top_k=k_l1,
-            name="new_c2f",
+            name="MoE C2F",
         )
 
-        new_c2f.i = old_c2f.i
-        new_c2f.f = old_c2f.f
-        new_c2f.type = old_c2f.type
+        self.new_c2f.i = old_c2f.i
+        self.new_c2f.f = old_c2f.f
+        self.new_c2f.type = old_c2f.type
 
-        self.model[6] = new_c2f
+        self.model[6] = self.new_c2f
 
-        print(self.model[6])
+        old_c2f_neck = self.model[12]
+        in_channels = old_c2f_neck.cv1.conv.in_channels
+        out_channels = old_c2f_neck.cv2.conv.out_channels
+        self.new_c2f_neck = C2fSparseMoE(
+            in_channels,
+            out_channels,
+            num_experts=n_experts_l2,
+            top_k=k_l2,
+            name="moe_c2f_neck"
+        )
 
+        self.new_c2f_neck.i = old_c2f_neck.i
+        self.new_c2f_neck.f = old_c2f_neck.f
+        self.new_c2f_neck.type = old_c2f_neck.type
+        self.model[12] = self.new_c2f_neck
+        
 
 class MoEDetectionTrainer(DetectionTrainer):
     def get_model(
@@ -102,6 +115,11 @@ class MoEDetectionTrainer(DetectionTrainer):
 
         if weights:
             model.load(weights)
+
+        self.add_callback('on_train_batch_end', MoELogger(modules_to_monitor={
+             "C2F Bottlenech [0]":  model.new_c2f.m[0],
+             "Neck C2F Bottlenech [0]":  model.new_c2f_neck.m[0],
+        }))
 
         return model
 
@@ -139,11 +157,5 @@ def yolov8_moe(n_experts_l1=4, k_l1=2, n_experts_l2=4, k_l2=2):
     """
     # instantiate YOLO architecture (file will be loaded but we will reinit weights below)
     model = MoEYOLO("yolov8n.pt")
-
-    # model.add_callback('on_train_batch_end', MoELogger(modules_to_monitor={
-    #     "Neck C2F":  new_c2f_neck.
-    # }))
-
-    model.add_callback("on_train_start", on_train_start)
 
     return model
