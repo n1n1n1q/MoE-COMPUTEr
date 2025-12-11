@@ -135,10 +135,11 @@ class NoisyGate(nn.Module):
 
         self.weight = nn.Parameter(
             torch.zeros(input_dim, num_experts), requires_grad=True
-        )
+        )  # (C1, num_experts)
         self.noise_weight = nn.Parameter(
             torch.zeros(input_dim, num_experts), requires_grad=True
-        )
+        )  # (C1, num_experts)
+
         self.softplus = nn.Softplus()
 
         nn.init.xavier_uniform_(self.weight)
@@ -148,24 +149,26 @@ class NoisyGate(nn.Module):
         """
         Forward pass through the gating network.
         Args:
-            x (torch.Tensor): Input tensor of shape (batch_size, dim).
+            x (torch.Tensor): Input tensor of shape (batch_size, dim). (B, C1, H, W) H = W = 40
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: Weights and indices of selected experts.
         """
         if x.dim() == 4:
-            x = F.adaptive_avg_pool2d(x, (1, 1)).view(x.size(0), -1)
+            x = F.adaptive_avg_pool2d(x, (1, 1)).view(x.size(0), -1)  # (B, C1)
 
-        clean_logits = x @ self.weight
-        raw_noise_stddev = x @ self.noise_weight
+        clean_logits = x @ self.weight  # (B, num_experts)
+        raw_noise_stddev = x @ self.noise_weight  # (B, num_experts)
 
-        noise_stddev = self.softplus(raw_noise_stddev) + 1e-2
-        noisy_logits = clean_logits + (torch.randn_like(clean_logits) * noise_stddev)
+        noise_stddev = self.softplus(raw_noise_stddev) + 1e-2  # (B, num_experts)
+        noisy_logits = clean_logits + (
+            torch.randn_like(clean_logits) * noise_stddev
+        )  # (B, num_experts)
 
-        logits = noisy_logits
+        scores = F.softmax(noisy_logits, dim=-1)  # (B, num_experts)
 
-        scores = F.softmax(logits, dim=-1)
-
-        top_k_weights, top_k_indices = torch.topk(scores, self.top_k, dim=-1)
+        top_k_weights, top_k_indices = torch.topk(
+            scores, self.top_k, dim=-1
+        )  # (B, top_k), (B, top_k)
 
         top_k_weights = top_k_weights / (top_k_weights.sum(dim=-1, keepdim=True) + 1e-9)
 
@@ -210,7 +213,7 @@ class MoEBottleneck(nn.Module):
         self.top_k = min(top_k, num_experts)
         self.experts = nn.ModuleList(
             [
-                Bottleneck(c1, c2, shortcut=shortcut, g=g, e=e, k=k)
+                Bottleneck(c1, c2, shortcut=shortcut, g=g, e=e / self.num_experts, k=k)
                 for _ in range(num_experts)
             ]
         )
@@ -229,7 +232,7 @@ class MoEBottleneck(nn.Module):
         outputs are weighted by the gate probabilities and combined.
 
         Args:
-            x (torch.Tensor): Input tensor of shape (batch_size, c1, height, width).
+            x (torch.Tensor): Input tensor of shape (batch_size, c1, height, width). (B, C1, H, W)
 
         Returns:
             torch.Tensor: Output tensor with expert outputs combined and optional residual connection.
@@ -246,21 +249,23 @@ class MoEBottleneck(nn.Module):
 
         output = torch.zeros_like(x)
         for expert_idx in range(self.num_experts):
-            mask = (gate_indices == expert_idx).any(dim=-1)
+            mask = (gate_indices == expert_idx).any(dim=-1)  # (B,)
 
             if mask.any():
-                masked_input = x[mask]
+                expert_output = self.experts[expert_idx](x[mask])  # (1, C2, H, W)
 
-                expert_output = self.experts[expert_idx](masked_input)
-
-                indices_subset = gate_indices[mask]
-                weights_subset = gate_weights[mask]
+                indices_subset = gate_indices[mask]  # (relevant experts num, top_k)
+                weights_subset = gate_weights[mask]  # (relevant experts num, top_k)
 
                 pos_mask = indices_subset == expert_idx  # (Subset_Size, top_k) boolean
-                
-                active_weights = (weights_subset * pos_mask.float()).sum(dim=-1)
 
-                active_weights = active_weights.view(-1, 1, 1, 1)
+                active_weights = (weights_subset * pos_mask.float()).sum(
+                    dim=-1
+                )  # (Subset_Size,)
+
+                active_weights = active_weights.view(
+                    -1, 1, 1, 1
+                )  # (Subset_Size, 1, 1, 1)
 
                 output[mask] += expert_output * active_weights
 

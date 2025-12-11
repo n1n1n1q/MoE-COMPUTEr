@@ -23,9 +23,8 @@ model.train(
     batch=4,
     workers=2,
     project="runs/train",
-    name="moe_yolo_voc",
-    verbose=True,
+    name="moe_yolo_voc_decrease_hidden_dim",
 )
-model.save("yolov8_moe_voc_rand.pt")
+model.save("yolov8_moe_voc_decrease_hidden_dim.pt")
 results = model.val(data=data_path, imgsz=640, batch=16, workers=8)
 print(results)
