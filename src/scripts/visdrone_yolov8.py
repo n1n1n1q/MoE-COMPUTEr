@@ -18,12 +18,12 @@ model = YOLO("yolov8n.yaml")
 data_path = "datasets/VisDrone.yaml"
 model.train(
     data=data_path,
-    epochs=20,
+    epochs=300,
     imgsz=640,
-    batch=4,
+    batch=32,
     workers=32,
     project="runs/train",
-    name="yolo_voc",
+    name="yolo_voc_100eps",
 )
 model.save("yolov8_base.pt")
 results = model.val(data=data_path, imgsz=640, batch=16, workers=8)

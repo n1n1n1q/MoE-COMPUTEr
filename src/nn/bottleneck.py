@@ -213,7 +213,7 @@ class MoEBottleneck(nn.Module):
         self.top_k = min(top_k, num_experts)
         self.experts = nn.ModuleList(
             [
-                Bottleneck(c1, c2, shortcut=shortcut, g=g, e=e / self.num_experts, k=k)
+                Bottleneck(c1, c2, shortcut=shortcut, g=g, e=e / self.top_k, k=k)
                 for _ in range(num_experts)
             ]
         )
@@ -240,12 +240,29 @@ class MoEBottleneck(nn.Module):
 
         gate_weights, gate_indices = self.gate(x)
 
-        values, counts = torch.unique(gate_indices, return_counts=True)
+        if self.training:
+            flat_indices = gate_indices.flatten()
+            flat_weights = gate_weights.flatten()
 
-        values = values.cpu()
-        counts = counts.cpu()
+            expert_counts = torch.bincount(flat_indices, minlength=self.num_experts)
+            f = expert_counts.float() / (flat_indices.numel() + 1e-9)
 
-        self._batches_per_expert[values] += counts
+            P = torch.zeros(self.num_experts, device=x.device, dtype=gate_weights.dtype)
+            P.index_add_(0, flat_indices, flat_weights)
+            P = P / (flat_indices.numel() + 1e-9)
+
+            aux_loss = self.num_experts * torch.sum(f.detach() * P)
+
+            aux_grads = torch.autograd.grad(aux_loss, gate_weights, retain_graph=True)[
+                0
+            ]
+
+            def hook_fn(grad):
+                return grad + (0.01 * aux_grads)
+
+            gate_weights.register_hook(hook_fn)
+
+            self._batches_per_expert = expert_counts.detach()
 
         output = torch.zeros_like(x)
         for expert_idx in range(self.num_experts):
