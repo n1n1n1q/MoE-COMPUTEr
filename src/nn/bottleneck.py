@@ -44,7 +44,9 @@ class Gate(nn.Module):
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: Weights and indices of selected experts.
         """
-        x = x.reshape(x.shape[0], -1).to(self.weight.dtype)
+        x = x.reshape(x.shape[0], -1)
+        if self.weight is not None:
+            x = x.to(self.weight.dtype)
 
         if self.weight is None:
             self.weight = nn.Parameter(
@@ -172,7 +174,7 @@ class NoisyGate(nn.Module):
 
         top_k_weights = top_k_weights / (top_k_weights.sum(dim=-1, keepdim=True) + 1e-9)
 
-        return top_k_weights, top_k_indices
+        return top_k_weights, top_k_indices, scores
 
 
 class MoEBottleneck(nn.Module):
@@ -222,7 +224,13 @@ class MoEBottleneck(nn.Module):
             num_experts=num_experts, top_k=self.top_k, input_dim=self.dim
         )
 
-        self._batches_per_expert = torch.tensor([0] * self.num_experts)
+        # Track how many samples/batches route to each expert.
+        # Register as a buffer so it moves with `model.to(device)`.
+        self.register_buffer(
+            "_batches_per_expert",
+            torch.zeros(self.num_experts, dtype=torch.long),
+            persistent=True,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -238,31 +246,23 @@ class MoEBottleneck(nn.Module):
             torch.Tensor: Output tensor with expert outputs combined and optional residual connection.
         """
 
-        gate_weights, gate_indices = self.gate(x)
+        gate_weights, gate_indices, gate_scores = self.gate(x)
 
         if self.training:
             flat_indices = gate_indices.flatten()
-            flat_weights = gate_weights.flatten()
 
             expert_counts = torch.bincount(flat_indices, minlength=self.num_experts)
+            expert_counts = expert_counts.to(self._batches_per_expert.device)
             f = expert_counts.float() / (flat_indices.numel() + 1e-9)
 
-            P = torch.zeros(self.num_experts, device=x.device, dtype=gate_weights.dtype)
-            P.index_add_(0, flat_indices, flat_weights)
-            P = P / (flat_indices.numel() + 1e-9)
+            P = gate_scores.mean(dim=0)
 
-            aux_loss = self.num_experts * torch.sum(f.detach() * P)
+            aux_loss = self.num_experts * torch.sum(f * P)
 
-            aux_grads = torch.autograd.grad(aux_loss, gate_weights, retain_graph=True)[
-                0
-            ]
+            scaled_loss = 0.05 * aux_loss
+            scaled_loss.backward(retain_graph=True)
 
-            def hook_fn(grad):
-                return grad + (0.01 * aux_grads)
-
-            gate_weights.register_hook(hook_fn)
-
-            self._batches_per_expert = expert_counts.detach()
+            self._batches_per_expert += expert_counts.detach()
 
         output = torch.zeros_like(x)
         for expert_idx in range(self.num_experts):
