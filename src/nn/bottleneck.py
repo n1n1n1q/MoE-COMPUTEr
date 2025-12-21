@@ -62,55 +62,30 @@ class Gate(nn.Module):
 
 
 class HasherGate(nn.Module):
-    """
-    Gating network for Mixture of Experts (MoE).
-    This module computes the gating scores for selecting top-k experts
-    based on the input features by hashing.
-    """
-
-    def __init__(self, num_experts: int, top_k: int):
-        """
-        Initialize the Gate.
-        Args:
-            num_experts (int): Number of experts available.
-            top_k (int): Number of top experts to select.
-        """
-        super(HasherGate, self).__init__()
+    def __init__(self, num_experts: int, input_dim: int):
+        super().__init__()
         self.num_experts = num_experts
-        self.top_k = top_k
+
+        self.register_buffer(
+            "scramble_weights",
+            torch.randint(1000, 100000, (input_dim,), dtype=torch.int64),
+        )
 
     def forward(self, x):
-        """
-        Forward pass through the gating network.
-        Args:
-            x (torch.Tensor): Input tensor of shape (batch_size, dim).
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: Weights and indices of selected experts.
-        """
         B, C, H, W = x.shape
 
-        pooled = F.adaptive_avg_pool2d(x, (1, 1)).view(B, C)
+        pooled = F.adaptive_avg_pool2d(x, (1, 1)).view(B, C).float()
+        int_features = (pooled * 10000).to(torch.int64)
 
-        int_features = (pooled * 1e4).to(torch.int32)
+        hashed_measure = (int_features * self.scramble_weights).sum(dim=1)
 
-        hash_vals = int_features[:, 0]
-        for i in range(1, C):
-            hash_vals ^= int_features[:, i]
+        expert_indices_cpu = torch.remainder(
+            hashed_measure.cpu().abs(), self.num_experts
+        )
 
-        expert_indices = hash_vals % self.num_experts
-
-        if self.top_k > 1:
-            all_indices = []
-            for k in range(self.top_k):
-                hashed = expert_indices + k * 2654435761
-                hashed = hashed % self.num_experts
-                all_indices.append(hashed)
-            expert_indices = torch.stack(all_indices, dim=1)
-        else:
-            expert_indices = expert_indices.unsqueeze(1)
+        expert_indices = expert_indices_cpu.to(x.device).unsqueeze(1)
 
         weights = torch.ones_like(expert_indices, dtype=torch.float32)
-        weights = weights / self.top_k
 
         return weights, expert_indices
 
@@ -215,17 +190,13 @@ class MoEBottleneck(nn.Module):
         self.top_k = min(top_k, num_experts)
         self.experts = nn.ModuleList(
             [
-                Bottleneck(c1, c2, shortcut=shortcut, g=g, e=e / self.top_k, k=k)
+                Bottleneck(c1, c2, shortcut=shortcut, g=g, e=e, k=k)
                 for _ in range(num_experts)
             ]
         )
 
-        self.gate = NoisyGate(
-            num_experts=num_experts, top_k=self.top_k, input_dim=self.dim
-        )
+        self.gate = HasherGate(num_experts=num_experts, input_dim=self.dim)
 
-        # Track how many samples/batches route to each expert.
-        # Register as a buffer so it moves with `model.to(device)`.
         self.register_buffer(
             "_batches_per_expert",
             torch.zeros(self.num_experts, dtype=torch.long),
@@ -246,23 +217,23 @@ class MoEBottleneck(nn.Module):
             torch.Tensor: Output tensor with expert outputs combined and optional residual connection.
         """
 
-        gate_weights, gate_indices, gate_scores = self.gate(x)
+        gate_weights, gate_indices = self.gate(x)
 
-        if self.training:
-            flat_indices = gate_indices.flatten()
+        # if self.training:
+        flat_indices = gate_indices.flatten()
 
-            expert_counts = torch.bincount(flat_indices, minlength=self.num_experts)
-            expert_counts = expert_counts.to(self._batches_per_expert.device)
-            f = expert_counts.float() / (flat_indices.numel() + 1e-9)
+        expert_counts = torch.bincount(flat_indices, minlength=self.num_experts)
+        #     expert_counts = expert_counts.to(self._batches_per_expert.device)
+        #     f = expert_counts.float() / (flat_indices.numel() + 1e-9)
 
-            P = gate_scores.mean(dim=0)
+        #     P = gate_scores.mean(dim=0)
 
-            aux_loss = self.num_experts * torch.sum(f * P)
+        #     aux_loss = self.num_experts * torch.sum(f * P)
 
-            scaled_loss = 0.05 * aux_loss
-            scaled_loss.backward(retain_graph=True)
+        #     scaled_loss = 0.05 * aux_loss
+        #     scaled_loss.backward(retain_graph=True)
 
-            self._batches_per_expert += expert_counts.detach()
+        self._batches_per_expert += expert_counts.detach()
 
         output = torch.zeros_like(x)
         for expert_idx in range(self.num_experts):
