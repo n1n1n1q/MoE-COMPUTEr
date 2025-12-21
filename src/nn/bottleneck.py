@@ -115,7 +115,7 @@ class HasherGate(nn.Module):
         return weights, expert_indices
 
 
-class NoisyGate(nn.Module):
+class NoisyGateBalancedBias(nn.Module):
     """
     Gating network for Mixture of Experts (MoE).
     This module computes the gating scores for selecting top-k experts
@@ -130,7 +130,7 @@ class NoisyGate(nn.Module):
             top_k (int): Number of top experts to select.
             bias (bool, optional): Whether to include a bias term. Defaults to True.
         """
-        super(NoisyGate, self).__init__()
+        super(NoisyGateBalancedBias, self).__init__()
         self.num_experts = num_experts
         self.top_k = top_k
         self.input_dim = input_dim
@@ -146,6 +146,13 @@ class NoisyGate(nn.Module):
 
         nn.init.xavier_uniform_(self.weight)
         nn.init.xavier_uniform_(self.noise_weight)
+
+        self.register_buffer(
+            "balancing_bias",
+            0.5 * torch.ones(num_experts, dtype=torch.float32),
+            persistent=True,
+        )
+        self.balancing_bias_lr = 0.1
 
     def forward(self, x):
         """
@@ -167,14 +174,22 @@ class NoisyGate(nn.Module):
         )  # (B, num_experts)
 
         scores = F.softmax(noisy_logits, dim=-1)  # (B, num_experts)
+        balanced_scores = scores + self.balancing_bias  # (B, num_experts)
 
         top_k_weights, top_k_indices = torch.topk(
-            scores, self.top_k, dim=-1
+            balanced_scores, self.top_k, dim=-1
         )  # (B, top_k), (B, top_k)
 
         top_k_weights = top_k_weights / (top_k_weights.sum(dim=-1, keepdim=True) + 1e-9)
 
         return top_k_weights, top_k_indices, scores
+
+    def update_balancing_bias(self, expert_counts: torch.Tensor):
+        with torch.no_grad():
+            expert_counts = expert_counts.to(device=self.balancing_bias.device)
+            mean_load = expert_counts.float().mean()
+            bias_update = torch.sign(mean_load - expert_counts.float())
+            self.balancing_bias.add_(self.balancing_bias_lr * bias_update)
 
 
 class MoEBottleneck(nn.Module):
@@ -220,7 +235,7 @@ class MoEBottleneck(nn.Module):
             ]
         )
 
-        self.gate = NoisyGate(
+        self.gate = NoisyGateBalancedBias(
             num_experts=num_experts, top_k=self.top_k, input_dim=self.dim
         )
 
@@ -252,15 +267,7 @@ class MoEBottleneck(nn.Module):
             flat_indices = gate_indices.flatten()
 
             expert_counts = torch.bincount(flat_indices, minlength=self.num_experts)
-            expert_counts = expert_counts.to(self._batches_per_expert.device)
-            f = expert_counts.float() / (flat_indices.numel() + 1e-9)
-
-            P = gate_scores.mean(dim=0)
-
-            aux_loss = self.num_experts * torch.sum(f * P)
-
-            scaled_loss = 0.05 * aux_loss
-            scaled_loss.backward(retain_graph=True)
+            self.gate.update_balancing_bias(expert_counts)
 
             self._batches_per_expert += expert_counts.detach()
 
