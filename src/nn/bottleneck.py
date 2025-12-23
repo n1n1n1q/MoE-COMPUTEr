@@ -144,9 +144,6 @@ class NoisyGate(nn.Module):
 
         self.softplus = nn.Softplus()
 
-        nn.init.xavier_uniform_(self.weight)
-        nn.init.xavier_uniform_(self.noise_weight)
-
     def forward(self, x):
         """
         Forward pass through the gating network.
