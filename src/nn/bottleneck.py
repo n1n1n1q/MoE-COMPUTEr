@@ -219,20 +219,9 @@ class MoEBottleneck(nn.Module):
 
         gate_weights, gate_indices = self.gate(x)
 
-        # if self.training:
         flat_indices = gate_indices.flatten()
 
         expert_counts = torch.bincount(flat_indices, minlength=self.num_experts)
-        #     expert_counts = expert_counts.to(self._batches_per_expert.device)
-        #     f = expert_counts.float() / (flat_indices.numel() + 1e-9)
-
-        #     P = gate_scores.mean(dim=0)
-
-        #     aux_loss = self.num_experts * torch.sum(f * P)
-
-        #     scaled_loss = 0.05 * aux_loss
-        #     scaled_loss.backward(retain_graph=True)
-
         self._batches_per_expert += expert_counts.detach()
 
         output = torch.zeros_like(x)
