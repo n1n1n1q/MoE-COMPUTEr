@@ -144,9 +144,6 @@ class NoisyGateBalancedBias(nn.Module):
 
         self.softplus = nn.Softplus()
 
-        nn.init.xavier_uniform_(self.weight)
-        nn.init.xavier_uniform_(self.noise_weight)
-
         self.register_buffer(
             "balancing_bias",
             0.5 * torch.ones(num_experts, dtype=torch.float32),
@@ -239,8 +236,6 @@ class MoEBottleneck(nn.Module):
             num_experts=num_experts, top_k=self.top_k, input_dim=self.dim
         )
 
-        # Track how many samples/batches route to each expert.
-        # Register as a buffer so it moves with `model.to(device)`.
         self.register_buffer(
             "_batches_per_expert",
             torch.zeros(self.num_experts, dtype=torch.long),
