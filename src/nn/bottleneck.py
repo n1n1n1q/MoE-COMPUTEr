@@ -22,7 +22,7 @@ class Gate(nn.Module):
     based on the input features.
     """
 
-    def __init__(self, num_experts: int, top_k: int, bias=True):
+    def __init__(self, num_experts: int, top_k: int, input_dim, bias=True):
         """
         Initialize the Gate.
         Args:
@@ -33,8 +33,18 @@ class Gate(nn.Module):
         super(Gate, self).__init__()
         self.num_experts = num_experts
         self.top_k = top_k
-        self.weight = None
-        self.bias = nn.Parameter(torch.rand(num_experts)) if bias else None
+        self.input_dim = input_dim
+
+        self.weight = nn.Parameter(
+            torch.zeros(input_dim, num_experts), requires_grad=True
+        )  # (C1, num_experts)
+        self.noise_weight = nn.Parameter(
+            torch.zeros(input_dim, num_experts), requires_grad=True
+        )  # (C1, num_experts)
+
+        self.softplus = nn.Softplus()
+
+        self.balance_loss = torch.tensor(0.0)
 
     def forward(self, x):
         """
@@ -44,21 +54,20 @@ class Gate(nn.Module):
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: Weights and indices of selected experts.
         """
-        x = x.reshape(x.shape[0], -1)
-        if self.weight is not None:
-            x = x.to(self.weight.dtype)
+        if x.dim() == 4:
+            x = F.adaptive_avg_pool2d(x, (1, 1)).view(x.size(0), -1)  # (B, C1)
 
-        if self.weight is None:
-            self.weight = nn.Parameter(
-                torch.randn(self.num_experts, x.shape[1], device=x.device)
-            )
+        clean_logits = x @ self.weight  # (B, num_experts)
 
-        scores = F.linear(x, self.weight, self.bias)
-        scores = scores.softmax(dim=-1)
-        indices = scores.topk(self.top_k, dim=-1)[1]
-        weights = scores.gather(-1, indices)
-        weights /= weights.sum(dim=-1, keepdim=True)
-        return weights, indices
+        scores = F.softmax(clean_logits, dim=-1)  # (B, num_experts)
+
+        top_k_weights, top_k_indices = torch.topk(
+            scores, self.top_k, dim=-1
+        )  # (B, top_k), (B, top_k)
+
+        top_k_weights = top_k_weights / (top_k_weights.sum(dim=-1, keepdim=True) + 1e-9)
+
+        return top_k_weights, top_k_indices, scores
 
 
 class HasherGate(nn.Module):
