@@ -16,7 +16,7 @@ model = yolov8_moe()
 data_path = "datasets/VisDrone.yaml"
 model.train(
     data=data_path,
-    epochs=20,
+    epochs=100,
     imgsz=640,
     batch=32,
     workers=2,

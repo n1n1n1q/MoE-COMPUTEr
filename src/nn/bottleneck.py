@@ -144,6 +144,8 @@ class NoisyGate(nn.Module):
 
         self.softplus = nn.Softplus()
 
+        self.balance_loss = torch.tensor(0.0)
+
     def forward(self, x):
         """
         Forward pass through the gating network.
@@ -257,7 +259,8 @@ class MoEBottleneck(nn.Module):
             aux_loss = self.num_experts * torch.sum(f * P)
 
             scaled_loss = 0.05 * aux_loss
-            scaled_loss.backward(retain_graph=True)
+            aux_loss += scaled_loss
+            # scaled_loss.backward(retain_graph=True) # UNCOMMENT THIS IF TRAINING FAILS
 
             self._batches_per_expert += expert_counts.detach()
 

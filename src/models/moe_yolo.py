@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 from ultralytics.models import yolo
+from ultralytics.utils import DEFAULT_CFG
 from src.utils.logger import MoELogger
 from src.nn.moe_c2f import C2fSparseMoE
 
@@ -58,7 +59,7 @@ def on_train_epoch_start(trainer):
         model(x)
 
     ka = p.key_averages()
-    
+
     total_flops = sum([op.flops for op in ka])
 
     writer = SummaryWriter(trainer.save_dir)
@@ -104,14 +105,40 @@ class MoEDetectionModel(DetectionModel):
             out_channels,
             num_experts=n_experts_l2,
             top_k=k_l2,
-            name="moe_c2f_neck"
+            name="moe_c2f_neck",
         )
 
         self.new_c2f_neck.i = old_c2f_neck.i
         self.new_c2f_neck.f = old_c2f_neck.f
         self.new_c2f_neck.type = old_c2f_neck.type
         self.model[12] = self.new_c2f_neck
-        
+
+    # DELETE THIS IF TRAINING FAILS
+    def loss(self, batch, preds=None):
+        if getattr(self, "criterion", None) is None:
+            self.criterion = self.init_criterion()
+
+            original_loss_call = self.criterion.__call__
+
+            def wrapped_loss_call(preds, batch):
+                loss, loss_items = original_loss_call(preds, batch)
+
+                aux_loss = 0.0
+                for module in self.model.modules():
+                    if hasattr(module, "balance_loss"):
+                        aux_loss += module.balance_loss
+
+                total_loss = loss + aux_loss
+
+                return total_loss, loss_items
+
+            self.criterion.__call__ = wrapped_loss_call
+
+        if preds is None:
+            preds = self.forward(batch["img"])
+
+        return self.criterion(preds, batch)
+
 
 class MoEDetectionTrainer(DetectionTrainer):
     def get_model(
@@ -138,12 +165,17 @@ class MoEDetectionTrainer(DetectionTrainer):
         if weights:
             model.load(weights)
 
-        self.add_callback('on_train_batch_end', MoELogger(modules_to_monitor={
-             "C2F Bottlenech [0]":  model.new_c2f.m[0],
-             "Neck C2F Bottlenech [0]":  model.new_c2f_neck.m[0],
-        }))
+        self.add_callback(
+            "on_train_batch_end",
+            MoELogger(
+                modules_to_monitor={
+                    "C2F Bottlenech [0]": model.new_c2f.m[0],
+                    "Neck C2F Bottlenech [0]": model.new_c2f_neck.m[0],
+                }
+            ),
+        )
 
-        self.add_callback('on_train_epoch_start', on_train_epoch_start)
+        self.add_callback("on_train_epoch_start", on_train_epoch_start)
 
         return model
 
@@ -152,6 +184,7 @@ class MoEYOLO(YOLO):
     @property
     def task_map(self) -> dict[str, dict[str, Any]]:
         """Map head to model, trainer, validator, and predictor classes."""
+
         return {
             "detect": {
                 "model": MoEDetectionModel,
