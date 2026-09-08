@@ -1,0 +1,301 @@
+"""
+Bottleneck layer implementations.
+
+This module provides standard bottleneck blocks with residual connections
+and Mixture of Experts (MoE) bottleneck blocks for efficient and dynamic
+neural network architectures.
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from ultralytics.utils import LOGGER
+from ultralytics.nn.modules.block import Bottleneck
+from src.nn.conv import Conv
+
+
+class Gate(nn.Module):
+    """
+    Gating network for Mixture of Experts (MoE).
+    This module computes the gating scores for selecting top-k experts
+    based on the input features.
+    """
+
+    def __init__(self, num_experts: int, top_k: int, input_dim, bias=True):
+        """
+        Initialize the Gate.
+        Args:
+            num_experts (int): Number of experts available.
+            top_k (int): Number of top experts to select.
+            bias (bool, optional): Whether to include a bias term. Defaults to True.
+        """
+        super(Gate, self).__init__()
+        self.num_experts = num_experts
+        self.top_k = top_k
+        self.input_dim = input_dim
+
+        self.weight = nn.Parameter(
+            torch.zeros(input_dim, num_experts), requires_grad=True
+        )  # (C1, num_experts)
+        self.noise_weight = nn.Parameter(
+            torch.zeros(input_dim, num_experts), requires_grad=True
+        )  # (C1, num_experts)
+
+        self.softplus = nn.Softplus()
+
+        self.balance_loss = torch.tensor(0.0)
+
+    def forward(self, x):
+        """
+        Forward pass through the gating network.
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, dim).
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: Weights and indices of selected experts.
+        """
+        if x.dim() == 4:
+            x = F.adaptive_avg_pool2d(x, (1, 1)).view(x.size(0), -1)  # (B, C1)
+
+        clean_logits = x @ self.weight  # (B, num_experts)
+
+        scores = F.softmax(clean_logits, dim=-1)  # (B, num_experts)
+
+        top_k_weights, top_k_indices = torch.topk(
+            scores, self.top_k, dim=-1
+        )  # (B, top_k), (B, top_k)
+
+        top_k_weights = top_k_weights / (top_k_weights.sum(dim=-1, keepdim=True) + 1e-9)
+
+        return top_k_weights, top_k_indices, scores
+
+
+class HasherGate(nn.Module):
+    """
+    Gating network for Mixture of Experts (MoE).
+    This module computes the gating scores for selecting top-k experts
+    based on the input features by hashing.
+    """
+
+    def __init__(self, num_experts: int, top_k: int):
+        """
+        Initialize the Gate.
+        Args:
+            num_experts (int): Number of experts available.
+            top_k (int): Number of top experts to select.
+        """
+        super(HasherGate, self).__init__()
+        self.num_experts = num_experts
+        self.top_k = top_k
+
+    def forward(self, x):
+        """
+        Forward pass through the gating network.
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, dim).
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: Weights and indices of selected experts.
+        """
+        B, C, H, W = x.shape
+
+        pooled = F.adaptive_avg_pool2d(x, (1, 1)).view(B, C)
+
+        int_features = (pooled * 1e4).to(torch.int32)
+
+        hash_vals = int_features[:, 0]
+        for i in range(1, C):
+            hash_vals ^= int_features[:, i]
+
+        expert_indices = hash_vals % self.num_experts
+
+        if self.top_k > 1:
+            all_indices = []
+            for k in range(self.top_k):
+                hashed = expert_indices + k * 2654435761
+                hashed = hashed % self.num_experts
+                all_indices.append(hashed)
+            expert_indices = torch.stack(all_indices, dim=1)
+        else:
+            expert_indices = expert_indices.unsqueeze(1)
+
+        weights = torch.ones_like(expert_indices, dtype=torch.float32)
+        weights = weights / self.top_k
+
+        return weights, expert_indices
+
+
+class NoisyGate(nn.Module):
+    """
+    Gating network for Mixture of Experts (MoE).
+    This module computes the gating scores for selecting top-k experts
+    based on the input features that adds noise to each gater's rank.
+    """
+
+    def __init__(self, num_experts: int, top_k: int, input_dim, bias=True):
+        """
+        Initialize the Gate.
+        Args:
+            num_experts (int): Number of experts available.
+            top_k (int): Number of top experts to select.
+            bias (bool, optional): Whether to include a bias term. Defaults to True.
+        """
+        super(NoisyGate, self).__init__()
+        self.num_experts = num_experts
+        self.top_k = top_k
+        self.input_dim = input_dim
+
+        self.weight = nn.Parameter(
+            torch.zeros(input_dim, num_experts), requires_grad=True
+        )  # (C1, num_experts)
+        self.noise_weight = nn.Parameter(
+            torch.zeros(input_dim, num_experts), requires_grad=True
+        )  # (C1, num_experts)
+
+        self.softplus = nn.Softplus()
+
+        self.balance_loss = torch.tensor(0.0)
+
+    def forward(self, x):
+        """
+        Forward pass through the gating network.
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, dim). (B, C1, H, W) H = W = 40
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: Weights and indices of selected experts.
+        """
+        if x.dim() == 4:
+            x = F.adaptive_avg_pool2d(x, (1, 1)).view(x.size(0), -1)  # (B, C1)
+
+        clean_logits = x @ self.weight  # (B, num_experts)
+        raw_noise_stddev = x @ self.noise_weight  # (B, num_experts)
+
+        noise_stddev = self.softplus(raw_noise_stddev) + 1e-2  # (B, num_experts)
+        noisy_logits = clean_logits + (
+            torch.randn_like(clean_logits) * noise_stddev
+        )  # (B, num_experts)
+
+        scores = F.softmax(noisy_logits, dim=-1)  # (B, num_experts)
+
+        top_k_weights, top_k_indices = torch.topk(
+            scores, self.top_k, dim=-1
+        )  # (B, top_k), (B, top_k)
+
+        top_k_weights = top_k_weights / (top_k_weights.sum(dim=-1, keepdim=True) + 1e-9)
+
+        return top_k_weights, top_k_indices, scores
+
+
+class MoEBottleneck(nn.Module):
+    """
+    Mixture of Experts (MoE) Bottleneck block.
+
+    This module implements a sparse MoE layer where multiple expert bottleneck blocks
+    are available, and a gating network dynamically selects the top-k experts for each
+    input. The outputs from selected experts are weighted and combined.
+    """
+
+    def __init__(
+        self,
+        c1: int,
+        c2: int,
+        num_experts: int = 4,
+        top_k: int = 2,
+        k: tuple = ((3, 3), (3, 3)),
+        shortcut: bool = True,
+        g: int = 1,
+        e: float = 0.5,
+    ):
+        """
+        Initialize MoE Bottleneck.
+
+        Args:
+            c1 (int): Number of input channels.
+            c2 (int): Number of output channels.
+            num_experts (int, optional): Number of expert bottleneck modules. Defaults to 4.
+            top_k (int, optional): Number of top experts to select per input. Defaults to 2.
+            shortcut (bool, optional): Whether to use residual shortcut connection. Defaults to True.
+            g (int, optional): Number of groups for grouped convolution. Defaults to 1.
+            e (float, optional): Channel expansion factor for expert bottlenecks. Defaults to 0.5.
+        """
+        super().__init__()
+        self.dim = c1
+        self.num_experts = num_experts
+        self.top_k = min(top_k, num_experts)
+        self.experts = nn.ModuleList(
+            [
+                Bottleneck(c1, c2, shortcut=shortcut, g=g, e=e / self.top_k, k=k)
+                for _ in range(num_experts)
+            ]
+        )
+
+        self.gate = NoisyGate(
+            num_experts=num_experts, top_k=self.top_k, input_dim=self.dim
+        )
+
+        # Track how many samples/batches route to each expert.
+        # Register as a buffer so it moves with `model.to(device)`.
+        self.register_buffer(
+            "_batches_per_expert",
+            torch.zeros(self.num_experts, dtype=torch.long),
+            persistent=True,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through the MoE bottleneck.
+
+        The gating network selects the top-k experts for each input, and their
+        outputs are weighted by the gate probabilities and combined.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, c1, height, width). (B, C1, H, W)
+
+        Returns:
+            torch.Tensor: Output tensor with expert outputs combined and optional residual connection.
+        """
+
+        gate_weights, gate_indices, gate_scores = self.gate(x)
+
+        if self.training:
+            flat_indices = gate_indices.flatten()
+
+            expert_counts = torch.bincount(flat_indices, minlength=self.num_experts)
+            expert_counts = expert_counts.to(self._batches_per_expert.device)
+            f = expert_counts.float() / (flat_indices.numel() + 1e-9)
+
+            P = gate_scores.mean(dim=0)
+
+            aux_loss = self.num_experts * torch.sum(f * P)
+
+            scaled_loss = 0.05 * aux_loss
+            aux_loss += scaled_loss
+            # scaled_loss.backward(retain_graph=True) # UNCOMMENT THIS IF TRAINING FAILS
+
+            self._batches_per_expert += expert_counts.detach()
+
+        output = torch.zeros_like(x)
+        for expert_idx in range(self.num_experts):
+            mask = (gate_indices == expert_idx).any(dim=-1)  # (B,)
+
+            if mask.any():
+                expert_output = self.experts[expert_idx](x[mask])  # (1, C2, H, W)
+
+                indices_subset = gate_indices[mask]  # (relevant experts num, top_k)
+                weights_subset = gate_weights[mask]  # (relevant experts num, top_k)
+
+                pos_mask = indices_subset == expert_idx  # (Subset_Size, top_k) boolean
+
+                active_weights = (weights_subset * pos_mask.float()).sum(
+                    dim=-1
+                )  # (Subset_Size,)
+
+                active_weights = active_weights.view(
+                    -1, 1, 1, 1
+                )  # (Subset_Size, 1, 1, 1)
+
+                output[mask] += expert_output * active_weights
+
+        return output
+
+    def get_batcher_per_expert(self):
+        return self._batches_per_expert

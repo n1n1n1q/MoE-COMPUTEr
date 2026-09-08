@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-set -e
 
 IMAGE_NAME=moe-computerv:latest
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-CONTAINER_NAME=moe_computerv_devenv
+CONTAINER_NAME=moe_computerv_devenv_second
 
 USER_ID=$(id -u)
 GROUP_ID=$(id -g)
@@ -25,16 +24,16 @@ if $RESET_CONTAINER; then
     docker rm -f ${CONTAINER_NAME} >/dev/null 2>&1 || true
 fi
 
-xhost +local:docker
+# xhost +local:docker
 
 docker run -it --rm \
-    --gpus all \
+    --gpus device=1 \
     --cpus ${CPU} \
     --ipc=host \
     --name ${CONTAINER_NAME} \
-    -p 8888:8888 \
-    -p 6006:6006 \
-    -p 9899:9899 \
+    -p 8889:8888 \
+    -p 6007:6006 \
+    -p 9900:9899 \
     -v ${REPO_ROOT}:/workspace \
     -e DISPLAY=$DISPLAY \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
@@ -43,7 +42,6 @@ docker run -it --rm \
     --memory ${MEMORY} \
     --memory-swap ${MEMORY_SWAP} \
     ${IMAGE_NAME} \
-    bash -c "
-        echo '${welcome}'
+    bash -c """
         /bin/bash
-    "
+    """
